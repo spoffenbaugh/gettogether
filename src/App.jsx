@@ -13,14 +13,21 @@ function calendarDays(year,month){
 }
 function today(){ const n=new Date(); return {y:n.getFullYear(),m:n.getMonth()}; }
 function fmtDay(iso){ const d=new Date(iso+"T00:00:00"); return `${DAYS[d.getDay()]}, ${MONTHS[d.getMonth()].slice(0,3)} ${d.getDate()}`; }
+function fmtDate(ts){ const d=new Date(ts); return `${MONTHS[d.getMonth()].slice(0,3)} ${d.getDate()}, ${d.getFullYear()}`; }
 
-// availability shape: { "2026-05-15": ["9:00 AM","2:00 PM"], ... }
 const TIMES = Array.from({length:24},(_,i)=>{ const h=i%12||12,p=i<12?"AM":"PM"; return `${h}:00 ${p}`; });
-function uid(){ return Math.random().toString(36).slice(2,8).toUpperCase(); }
+function uid(){ return Math.random().toString(36).slice(2,10).toUpperCase(); }
 function sortedDays(avail){ return Object.keys(avail).sort(); }
 function totalSlots(avail){ return Object.values(avail).reduce((s,t)=>s+t.length,0); }
 
-// ── Supabase storage ──────────────────────────────────────────────────────────
+// ── Host ID — persisted in localStorage ──────────────────────────────────────
+function getHostId(){
+  let id = localStorage.getItem("gt:hostId");
+  if(!id){ id=uid(); localStorage.setItem("gt:hostId",id); }
+  return id;
+}
+
+// ── Supabase ──────────────────────────────────────────────────────────────────
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
@@ -43,27 +50,34 @@ async function sbFetch(path, options={}){
 async function saveEvent(id, data){
   await sbFetch("events", {
     method: "POST",
-    body: JSON.stringify({ id, title: data.title, availability: data.availability }),
+    body: JSON.stringify({ id, title: data.title, availability: data.availability, host_id: data.hostId }),
   });
 }
-
 async function loadEvent(id){
   const rows = await sbFetch(`events?id=eq.${id}&limit=1`);
-  if(!rows || rows.length===0) return null;
-  return { title: rows[0].title, availability: rows[0].availability };
+  if(!rows||rows.length===0) return null;
+  return { title:rows[0].title, availability:rows[0].availability, createdAt:rows[0].created_at };
 }
-
+async function loadHostEvents(hostId){
+  const rows = await sbFetch(`events?host_id=eq.${hostId}&order=created_at.desc`);
+  return rows||[];
+}
 async function saveResponse(eventId, guestId, data){
   await sbFetch("responses", {
     method: "POST",
-    body: JSON.stringify({ id: guestId, event_id: eventId, name: data.name, availability: data.availability }),
+    body: JSON.stringify({ id:guestId, event_id:eventId, name:data.name, availability:data.availability }),
   });
 }
-
 async function loadAllResponses(eventId){
   const rows = await sbFetch(`responses?event_id=eq.${eventId}`);
-  if(!rows) return [];
-  return rows.map(r => ({ name: r.name, availability: r.availability }));
+  return (rows||[]).map(r=>({ name:r.name, availability:r.availability }));
+}
+async function loadResponseCounts(eventIds){
+  if(!eventIds.length) return {};
+  const rows = await sbFetch(`responses?event_id=in.(${eventIds.join(",")})&select=event_id`);
+  const counts={};
+  for(const r of (rows||[])){ counts[r.event_id]=(counts[r.event_id]||0)+1; }
+  return counts;
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -89,8 +103,11 @@ const C={
 const font="'Plus Jakarta Sans','DM Sans',sans-serif";
 
 // ── Base UI ───────────────────────────────────────────────────────────────────
-function Card({ children, style={} }){
-  return <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:20,marginBottom:16,...style}}>{children}</div>;
+function Card({ children, style={}, onClick }){
+  return(
+    <div onClick={onClick} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,
+      padding:20,marginBottom:16,cursor:onClick?"pointer":"default",...style}}>{children}</div>
+  );
 }
 function FieldLabel({ children }){
   return <div style={{fontSize:13,fontWeight:600,color:C.text,marginBottom:8}}>{children}</div>;
@@ -140,7 +157,8 @@ function Pill({ label, color }){
   );
 }
 function SectionTitle({ children }){
-  return <div style={{fontSize:11,fontWeight:600,color:C.textMid,letterSpacing:".06em",textTransform:"uppercase",marginBottom:8,marginTop:4}}>{children}</div>;
+  return <div style={{fontSize:11,fontWeight:600,color:C.textMid,letterSpacing:".06em",
+    textTransform:"uppercase",marginBottom:8,marginTop:4}}>{children}</div>;
 }
 function Centered({ children }){
   return <div style={{padding:80,textAlign:"center",color:C.textMid,fontSize:14}}>{children}</div>;
@@ -184,15 +202,10 @@ function LinkBox({ label, url }){
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
 function DayCell({ d, state, onToggle }){
-  // state: "selected" | "has-times" | "disabled" | "normal"
   const [hov,setHov]=useState(false);
-  const bg = state==="has-times" ? C.accent
-           : state==="selected"  ? C.accentBg
-           : hov&&state!=="disabled" ? C.surfaceHi : "transparent";
-  const color = state==="has-times" ? "#fff"
-              : state==="selected"  ? C.accent
-              : state==="disabled"  ? C.textDim : C.text;
-  const border = state==="selected" ? `2px solid ${C.accent}` : "2px solid transparent";
+  const bg=state==="has-times"?C.accent:state==="selected"?C.accentBg:hov&&state!=="disabled"?C.surfaceHi:"transparent";
+  const color=state==="has-times"?"#fff":state==="selected"?C.accent:state==="disabled"?C.textDim:C.text;
+  const border=state==="selected"?`2px solid ${C.accent}`:"2px solid transparent";
   return(
     <button onClick={onToggle} onMouseEnter={()=>state!=="disabled"&&setHov(true)} onMouseLeave={()=>setHov(false)}
       style={{aspectRatio:"1",borderRadius:8,border,cursor:state==="disabled"?"default":"pointer",
@@ -200,8 +213,7 @@ function DayCell({ d, state, onToggle }){
         fontSize:13,transition:"all .12s",outline:"none",fontFamily:font}}>{d}</button>
   );
 }
-
-function Calendar({ year, month, availability, onToggleDay, isDisabled, selectedDay, onSelectDay }){
+function Calendar({ year, month, availability, isDisabled, selectedDay, onSelectDay }){
   const cells=calendarDays(year,month);
   return(
     <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3}}>
@@ -211,22 +223,15 @@ function Calendar({ year, month, availability, onToggleDay, isDisabled, selected
         const iso=isoDate(year,month,d);
         const dis=isDisabled?isDisabled(iso):false;
         const hasTimes=availability[iso]?.length>0;
-        const isSel=selectedDay===iso;
-        const state=dis?"disabled":hasTimes?"has-times":isSel?"selected":"normal";
-        return(
-          <DayCell key={iso} d={d} state={state}
-            onToggle={()=>{
-              if(dis) return;
-              if(onToggleDay) onToggleDay(iso);
-              if(onSelectDay) onSelectDay(iso);
-            }}/>
-        );
+        const isSel=selectedDay===iso, isAdded=iso in availability;
+        const state=dis?"disabled":hasTimes?"has-times":isSel||isAdded?"selected":"normal";
+        return <DayCell key={iso} d={d} state={state} onToggle={()=>{ if(dis)return; onSelectDay(iso); }}/>;
       })}
     </div>
   );
 }
 
-// ── Time grid (for a single day) ──────────────────────────────────────────────
+// ── Time grid ─────────────────────────────────────────────────────────────────
 function TimeCell({ t, sel, avail, onToggle }){
   const [hov,setHov]=useState(false);
   return(
@@ -248,100 +253,78 @@ function TimeGrid({ available, selected, onToggle }){
   );
 }
 
-// ── DayTimeEditor — shared by host + guest ────────────────────────────────────
-// availability: { iso: [times] }   (what this user has picked so far)
-// offered:      { iso: [times] }   (host's offered slots; null = no restriction)
-// onToggleDay:  (iso) => void       (add/remove day from availability)
-// onToggleTime: (iso, time) => void
-function DayTimeEditor({ availability, offered, cal, onPrevMonth, onNextMonth }){
-  const days = offered ? Object.keys(offered).sort() : sortedDays(availability);
-  const [activeDay, setActiveDay] = useState(null);
-
-  // auto-select first selected day on mount or when availability changes
-  useEffect(()=>{
-    const selected = sortedDays(availability);
-    if(selected.length && (!activeDay || !availability[activeDay])){
-      setActiveDay(selected[0]);
-    }
-  },[]);
+// ── DayTimeEditor ─────────────────────────────────────────────────────────────
+function DayTimeEditor({ availability, setAvailability, offered, cal, onPrevMonth, onNextMonth }){
+  const [activeDay,setActiveDay]=useState(null);
 
   function handleDayClick(iso){
-    // If offered is set, only allow days in offered
-    if(offered && !offered[iso]) return;
-    // Toggle: if day already in availability, selecting it again just activates it in the panel
+    if(offered&&!offered[iso]) return;
+    if(!(iso in availability)) setAvailability(prev=>({...prev,[iso]:[]}));
     setActiveDay(iso);
   }
+  function toggleTime(iso,time){
+    setAvailability(prev=>{
+      const times=prev[iso]||[];
+      const next=times.includes(time)?times.filter(t=>t!==time):[...times,time];
+      return {...prev,[iso]:next};
+    });
+  }
+  function removeDay(iso){
+    setAvailability(prev=>{ const n={...prev}; delete n[iso]; return n; });
+    if(activeDay===iso) setActiveDay(null);
+  }
 
-  const activeTimes = activeDay ? (availability[activeDay]||[]) : [];
-  const offeredTimes = activeDay && offered ? (offered[activeDay]||[]) : null;
+  const activeTimes=activeDay?(availability[activeDay]||[]):[];
+  const offeredTimes=activeDay&&offered?(offered[activeDay]||[]):null;
+  const days=sortedDays(availability);
 
   return(
     <div>
       <Card>
         <MonthNav cal={cal} onPrev={onPrevMonth} onNext={onNextMonth}/>
-        <Calendar year={cal.y} month={cal.m}
-          availability={availability}
-          selectedDay={activeDay}
-          onSelectDay={handleDayClick}
-          isDisabled={offered ? iso=>!offered[iso] : undefined}/>
+        <Calendar year={cal.y} month={cal.m} availability={availability}
+          selectedDay={activeDay} onSelectDay={handleDayClick}
+          isDisabled={offered?iso=>!offered[iso]:undefined}/>
         <div style={{fontSize:11,color:C.textDim,marginTop:10}}>
-          {offered ? "Only dates the host offered are selectable" : "Click a date to set times for it"}
+          {offered?"Only dates the host offered are selectable":"Click a date to set times for it"}
         </div>
       </Card>
 
-      {/* Time picker panel */}
-      {activeDay ? (
+      {activeDay?(
         <Card style={{borderColor:C.borderHi}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
             <div style={{fontSize:13,fontWeight:600,color:C.text}}>{fmtDay(activeDay)}</div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              {activeTimes.length>0&&(
-                <Pill label={`${activeTimes.length} selected`} color={C.accent}/>
-              )}
-              {/* Remove day button — only show if this day has been activated */}
-              {availability[activeDay]!==undefined&&(
-                <Btn variant="danger" style={{padding:"4px 10px",fontSize:11}}
-                  onClick={()=>{ /* handled by parent via onToggleTime clearing all */ }}>
-                </Btn>
-              )}
+              {activeTimes.length>0&&<Pill label={`${activeTimes.length} selected`} color={C.accent}/>}
+              <Btn variant="danger" style={{padding:"4px 10px",fontSize:11}} onClick={()=>removeDay(activeDay)}>Remove day</Btn>
             </div>
           </div>
-          <TimeGrid available={offeredTimes} selected={activeTimes}
-            onToggle={(t)=>{
-              // bubble up as a synthetic event — parent handles via onToggleTime
-              const evt=new CustomEvent("toggletime",{detail:{iso:activeDay,time:t},bubbles:true});
-              document.dispatchEvent(evt);
-            }}/>
+          <TimeGrid available={offeredTimes} selected={activeTimes} onToggle={t=>toggleTime(activeDay,t)}/>
           {offeredTimes&&offeredTimes.length===0&&(
-            <div style={{fontSize:12,color:C.textMid,marginTop:10}}>No times offered for this day.</div>
+            <div style={{fontSize:12,color:C.textMid,marginTop:10}}>No times were offered for this day.</div>
           )}
         </Card>
-      ) : (
+      ):(
         <Card style={{textAlign:"center",padding:28,borderStyle:"dashed"}}>
           <div style={{fontSize:13,color:C.textMid}}>
-            {Object.keys(availability).length===0
-              ? "Click a date above to select times for it"
-              : "Click a date to view or edit its times"}
+            {days.length===0?"Click a date above to add it and select times":"Click a date to view or edit its times"}
           </div>
         </Card>
       )}
 
-      {/* Summary of all selected day+times */}
-      {sortedDays(availability).length>0&&(
+      {days.length>0&&(
         <div style={{marginTop:4}}>
           <SectionTitle>Your selections</SectionTitle>
           <div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {sortedDays(availability).map(iso=>(
-              <div key={iso} style={{display:"flex",alignItems:"center",gap:10,
-                background:activeDay===iso?C.surfaceHi:C.surface,
-                border:`1px solid ${activeDay===iso?C.borderHi:C.border}`,
-                borderRadius:8,padding:"8px 12px",cursor:"pointer"}}
-                onClick={()=>setActiveDay(iso)}>
+            {days.map(iso=>(
+              <div key={iso} onClick={()=>setActiveDay(iso)}
+                style={{display:"flex",alignItems:"center",gap:10,
+                  background:activeDay===iso?C.surfaceHi:C.surface,
+                  border:`1px solid ${activeDay===iso?C.borderHi:C.border}`,
+                  borderRadius:8,padding:"8px 12px",cursor:"pointer"}}>
                 <div style={{fontSize:13,fontWeight:500,color:C.text,flex:1}}>{fmtDay(iso)}</div>
                 <div style={{fontSize:12,color:availability[iso]?.length?C.accent:C.textDim}}>
-                  {availability[iso]?.length
-                    ? `${availability[iso].length} time${availability[iso].length!==1?"s":""}`
-                    : "no times yet"}
+                  {availability[iso]?.length?`${availability[iso].length} time${availability[iso].length!==1?"s":""}` :"no times yet"}
                 </div>
                 <div style={{fontSize:11,color:C.textDim}}>›</div>
               </div>
@@ -353,44 +336,91 @@ function DayTimeEditor({ availability, offered, cal, onPrevMonth, onNextMonth })
   );
 }
 
+// ── My Polls Dashboard ────────────────────────────────────────────────────────
+function MyPolls(){
+  const [events,setEvents]=useState([]);
+  const [counts,setCounts]=useState({});
+  const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    async function load(){
+      const hostId=getHostId();
+      const evts=await loadHostEvents(hostId);
+      setEvents(evts);
+      if(evts.length){
+        const c=await loadResponseCounts(evts.map(e=>e.id));
+        setCounts(c);
+      }
+      setLoading(false);
+    }
+    load();
+  },[]);
+
+  if(loading) return <Centered>Loading your polls…</Centered>;
+
+  return(
+    <PageWrap maxWidth={620}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:28,flexWrap:"wrap",gap:12}}>
+        <PageHeader title="My Polls" sub="All the polls you've created on this device." noMargin/>
+        <Btn onClick={()=>navigate("create")} style={{padding:"9px 18px"}}>+ New poll</Btn>
+      </div>
+
+      {events.length===0?(
+        <Card style={{textAlign:"center",padding:48}}>
+          <div style={{fontSize:32,marginBottom:16}}>📅</div>
+          <div style={{fontSize:15,fontWeight:600,color:C.text,marginBottom:8}}>No polls yet</div>
+          <div style={{fontSize:13,color:C.textMid,marginBottom:24}}>Create your first poll to get started.</div>
+          <Btn onClick={()=>navigate("create")}>Create a poll</Btn>
+        </Card>
+      ):(
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          {events.map(evt=>{
+            const responseCount=counts[evt.id]||0;
+            const guestUrl=`${location.origin}${location.pathname}#guest/${evt.id}`;
+            const days=Object.keys(evt.availability||{}).length;
+            return(
+              <Card key={evt.id} style={{marginBottom:0}}>
+                <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:4,
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{evt.title}</div>
+                    <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                      <span style={{fontSize:12,color:C.textMid}}>{fmtDate(evt.created_at)}</span>
+                      <span style={{fontSize:12,color:C.textDim}}>·</span>
+                      <span style={{fontSize:12,color:C.textMid}}>{days} day{days!==1?"s":""}</span>
+                      <span style={{fontSize:12,color:C.textDim}}>·</span>
+                      <span style={{fontSize:12,color:responseCount>0?C.accent:C.textMid,fontWeight:responseCount>0?600:400}}>
+                        {responseCount} response{responseCount!==1?"s":""}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:8,flexShrink:0}}>
+                    <Btn variant="ghost" style={{padding:"7px 14px",fontSize:12}}
+                      onClick={()=>{ navigator.clipboard.writeText(guestUrl).catch(()=>{}); }}>
+                      Copy guest link
+                    </Btn>
+                    <Btn style={{padding:"7px 14px",fontSize:12}}
+                      onClick={()=>navigate(`results/${evt.id}`)}>
+                      View results
+                    </Btn>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </PageWrap>
+  );
+}
+
 // ── Host Create ───────────────────────────────────────────────────────────────
 function HostCreate(){
   const [cal,setCal]=useState(today());
-  // availability: { iso: [times] }
   const [availability,setAvailability]=useState({});
   const [title,setTitle]=useState("");
   const [saving,setSaving]=useState(false);
   const [done,setDone]=useState(null);
-
-  // Listen for time toggle events from DayTimeEditor
-  useEffect(()=>{
-    function onToggle(e){
-      const {iso,time}=e.detail;
-      setAvailability(prev=>{
-        const times=prev[iso]||[];
-        const next=times.includes(time)?times.filter(t=>t!==time):[...times,time];
-        // If no times remain for this day, keep the key but empty (so day stays visible)
-        return {...prev,[iso]:next};
-      });
-    }
-    document.addEventListener("toggletime",onToggle);
-    return()=>document.removeEventListener("toggletime",onToggle);
-  },[]);
-
-  function handleDayClick(iso){
-    setAvailability(prev=>{
-      if(iso in prev){
-        // day already exists — clicking just selects it in the panel, don't remove
-        return prev;
-      }
-      // Add day with empty times
-      return {...prev,[iso]:[]};
-    });
-  }
-
-  function removeDay(iso){
-    setAvailability(prev=>{ const n={...prev}; delete n[iso]; return n; });
-  }
 
   const days=sortedDays(availability);
   const slots=totalSlots(availability);
@@ -400,23 +430,28 @@ function HostCreate(){
     if(!ready) return;
     setSaving(true);
     const id=uid();
-    await saveEvent(id,{title:title.trim(),availability,created:Date.now()});
+    const hostId=getHostId();
+    await saveEvent(id,{title:title.trim(),availability,hostId});
     setDone(id); setSaving(false);
   }
 
   if(done){
     const guestUrl=`${location.origin}${location.pathname}#guest/${done}`;
-    const hostUrl=`${location.origin}${location.pathname}#results/${done}`;
+    const resultsUrl=`${location.origin}${location.pathname}#results/${done}`;
     return(
       <PageWrap>
         <div style={{marginBottom:28}}>
           <div style={{fontSize:13,fontWeight:500,color:C.green,marginBottom:6}}>✓ Poll created</div>
           <div style={{fontSize:22,fontWeight:700,color:C.text,marginBottom:4}}>You're all set!</div>
-          <div style={{fontSize:14,color:C.textMid}}>Share the guest link and check back for results.</div>
+          <div style={{fontSize:14,color:C.textMid}}>Share the guest link below. You can always find this poll in My Polls.</div>
         </div>
-        <Card><LinkBox label="Share with guests" url={guestUrl}/></Card>
-        <Card><LinkBox label="Your results page — save this link" url={hostUrl}/></Card>
-        <Btn variant="ghost" onClick={()=>navigate("")}>← Create another</Btn>
+        <Card>
+          <LinkBox label="Share with guests" url={guestUrl}/>
+        </Card>
+        <div style={{display:"flex",gap:10,marginTop:4}}>
+          <Btn variant="ghost" onClick={()=>navigate("mypolls")}>← My Polls</Btn>
+          <Btn onClick={()=>navigate(`results/${done}`)}>View results →</Btn>
+        </div>
       </PageWrap>
     );
   }
@@ -424,38 +459,17 @@ function HostCreate(){
   return(
     <PageWrap>
       <PageHeader title="New availability poll" sub="Pick your available days and the times for each one."/>
-
       <FieldLabel>Event name</FieldLabel>
       <TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder="Coffee catch-up, team sync…"/>
-
       <FieldLabel>Your availability</FieldLabel>
-      <DayTimeEditor
-        availability={availability}
-        offered={null}
-        cal={cal}
+      <DayTimeEditor availability={availability} setAvailability={setAvailability}
+        offered={null} cal={cal}
         onPrevMonth={()=>setCal(c=>c.m===0?{y:c.y-1,m:11}:{y:c.y,m:c.m-1})}
-        onNextMonth={()=>setCal(c=>c.m===11?{y:c.y+1,m:0}:{y:c.y,m:c.m+1})}
-      />
-
-      {/* Remove-day buttons */}
-      {days.length>0&&(
-        <div style={{marginTop:12,display:"flex",flexWrap:"wrap",gap:6}}>
-          {days.map(iso=>(
-            <button key={iso} onClick={()=>removeDay(iso)}
-              style={{background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,
-                padding:"4px 10px",fontSize:11,color:C.textMid,cursor:"pointer",fontFamily:font,
-                display:"flex",alignItems:"center",gap:5}}>
-              <span style={{color:C.textDim}}>✕</span> {fmtDay(iso)}
-            </button>
-          ))}
-        </div>
-      )}
-
+        onNextMonth={()=>setCal(c=>c.m===11?{y:c.y+1,m:0}:{y:c.y,m:c.m+1})}/>
       <div style={{display:"flex",gap:8,margin:"20px 0",flexWrap:"wrap"}}>
         <Pill label={`${days.length} day${days.length!==1?"s":""}`}/>
         <Pill label={`${slots} time slot${slots!==1?"s":""}`}/>
       </div>
-
       <Btn onClick={create} disabled={saving||!ready} fullWidth style={{padding:"13px"}}>
         {saving?"Creating…":"Create poll & get link"}
       </Btn>
@@ -468,7 +482,6 @@ function GuestView({ eventId }){
   const [event,setEvent]=useState(null);
   const [loading,setLoading]=useState(true);
   const [name,setName]=useState("");
-  // availability: { iso: [times] } — guest's selections
   const [availability,setAvailability]=useState({});
   const [saving,setSaving]=useState(false);
   const [done,setDone]=useState(false);
@@ -480,7 +493,6 @@ function GuestView({ eventId }){
       if(e?.availability){
         const firstDay=Object.keys(e.availability).sort()[0];
         if(firstDay){ const d=new Date(firstDay+"T00:00:00"); setCal({y:d.getFullYear(),m:d.getMonth()}); }
-        // Pre-populate availability keys (empty) for all host days so calendar shows them
         const init={};
         Object.keys(e.availability).forEach(iso=>{ init[iso]=[]; });
         setAvailability(init);
@@ -488,26 +500,12 @@ function GuestView({ eventId }){
     });
   },[eventId]);
 
-  // Listen for time toggle events
-  useEffect(()=>{
-    function onToggle(e){
-      const {iso,time}=e.detail;
-      setAvailability(prev=>{
-        const times=prev[iso]||[];
-        const next=times.includes(time)?times.filter(t=>t!==time):[...times,time];
-        return {...prev,[iso]:next};
-      });
-    }
-    document.addEventListener("toggletime",onToggle);
-    return()=>document.removeEventListener("toggletime",onToggle);
-  },[]);
-
   const slots=totalSlots(availability);
 
   async function submit(){
-    if(!name.trim()) return;
+    if(!name.trim()||slots===0) return;
     setSaving(true);
-    await saveResponse(eventId,uid(),{name:name.trim(),availability,submitted:Date.now()});
+    await saveResponse(eventId,uid(),{name:name.trim(),availability});
     setDone(true); setSaving(false);
   }
 
@@ -523,30 +521,22 @@ function GuestView({ eventId }){
   );
 
   const offeredDays=Object.keys(event.availability).sort();
-
   return(
     <PageWrap>
       <PageHeader title={event.title} sub="Select the times that work for you on each day."/>
-
       <FieldLabel>Your name</FieldLabel>
       <TextInput value={name} onChange={e=>setName(e.target.value)} placeholder="Your name"/>
-
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
         <FieldLabel>Your availability</FieldLabel>
         <span style={{fontSize:12,color:C.textMid,marginBottom:8}}>{offeredDays.length} day{offeredDays.length!==1?"s":""} offered</span>
       </div>
-
-      <DayTimeEditor
-        availability={availability}
-        offered={event.availability}
-        cal={cal}
+      <DayTimeEditor availability={availability} setAvailability={setAvailability}
+        offered={event.availability} cal={cal}
         onPrevMonth={()=>setCal(c=>c.m===0?{y:c.y-1,m:11}:{y:c.y,m:c.m-1})}
         onNextMonth={()=>setCal(c=>c.m===11?{y:c.y+1,m:0}:{y:c.y,m:c.m+1})}/>
-
       <div style={{display:"flex",gap:8,margin:"20px 0",flexWrap:"wrap"}}>
         <Pill label={`${slots} time slot${slots!==1?"s":""} selected`} color={slots>0?C.accent:C.textMid}/>
       </div>
-
       <Btn onClick={submit} disabled={saving||!name.trim()||slots===0} fullWidth style={{padding:"13px"}}>
         {saving?"Submitting…":"Submit availability"}
       </Btn>
@@ -571,37 +561,36 @@ function ResultsView({ eventId }){
   if(loading) return <Centered>Loading…</Centered>;
   if(!event)  return <Centered>Event not found.</Centered>;
 
-  const n=responses.length||1;
-
-  // Build slot counts: { "2026-05-15|9:00 AM": count }
   const slotCount={};
   for(const r of responses){
     for(const [iso,times] of Object.entries(r.availability||{})){
-      for(const t of times){
-        const key=`${iso}|${t}`;
-        slotCount[key]=(slotCount[key]||0)+1;
-      }
+      for(const t of times){ const key=`${iso}|${t}`; slotCount[key]=(slotCount[key]||0)+1; }
     }
   }
-
   function barColor(count){
     if(!responses.length) return C.border;
     const p=count/responses.length;
     return p===1?C.green:p>=.5?C.yellow:C.accent;
   }
-
   const offeredDays=Object.keys(event.availability).sort();
 
   return(
     <PageWrap maxWidth={680}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:28}}>
-        <PageHeader title={event.title} sub={`${responses.length} response${responses.length!==1?"s":""} so far`} noMargin/>
+        <div>
+          <button onClick={()=>navigate("mypolls")} style={{background:"none",border:"none",cursor:"pointer",
+            color:C.textMid,fontSize:13,fontFamily:font,marginBottom:8,padding:0,display:"block"}}>
+            ← My Polls
+          </button>
+          <PageHeader title={event.title} sub={`${responses.length} response${responses.length!==1?"s":""} so far`} noMargin/>
+        </div>
         <Btn variant="ghost" onClick={reload}>Refresh</Btn>
       </div>
 
       {responses.length===0?(
         <Card style={{textAlign:"center",padding:40}}>
-          <div style={{fontSize:13,color:C.textMid}}>No responses yet — share the guest link below.</div>
+          <div style={{fontSize:13,color:C.textMid,marginBottom:16}}>No responses yet.</div>
+          <LinkBox label="Share this guest link to get responses" url={`${location.origin}${location.pathname}#guest/${eventId}`}/>
         </Card>
       ):(
         <>
@@ -616,9 +605,7 @@ function ResultsView({ eventId }){
                 ):(
                   <div style={{display:"flex",flexDirection:"column",gap:9}}>
                     {offeredTimes.map(t=>{
-                      const key=`${iso}|${t}`;
-                      const count=slotCount[key]||0;
-                      const pct=count/responses.length*100;
+                      const key=`${iso}|${t}`, count=slotCount[key]||0, pct=count/responses.length*100;
                       return(
                         <div key={t} style={{display:"flex",alignItems:"center",gap:12}}>
                           <div style={{width:72,fontSize:12,color:C.textMid,flexShrink:0}}>{t}</div>
@@ -635,12 +622,11 @@ function ResultsView({ eventId }){
             );
           })}
 
-          <SectionTitle style={{marginTop:20}}>Who responded</SectionTitle>
+          <SectionTitle>Who responded</SectionTitle>
           <Card>
             <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
               {responses.map((r,i)=>{
-                const total=totalSlots(r.availability||{});
-                const days=Object.keys(r.availability||{}).length;
+                const total=totalSlots(r.availability||{}), days=Object.keys(r.availability||{}).length;
                 return(
                   <div key={i} style={{display:"flex",alignItems:"center",gap:8,
                     background:C.surfaceHi,border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 12px"}}>
@@ -658,13 +644,12 @@ function ResultsView({ eventId }){
               })}
             </div>
           </Card>
+
+          <div style={{borderTop:`1px solid ${C.border}`,paddingTop:20,marginTop:4}}>
+            <LinkBox label="Guest link to share" url={`${location.origin}${location.pathname}#guest/${eventId}`}/>
+          </div>
         </>
       )}
-
-      <div style={{borderTop:`1px solid ${C.border}`,paddingTop:20,marginTop:4}}>
-        <div style={{fontSize:12,color:C.textMid,marginBottom:10}}>Guest link to share</div>
-        <LinkBox url={`${location.origin}${location.pathname}#guest/${eventId}`}/>
-      </div>
     </PageWrap>
   );
 }
@@ -683,7 +668,10 @@ function Landing(){
         The simplest way to find a time that works.<br/>
         Set your availability, share a link, done.
       </p>
-      <Btn onClick={()=>navigate("create")} style={{padding:"13px 32px",fontSize:14}}>Create a poll</Btn>
+      <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap"}}>
+        <Btn onClick={()=>navigate("create")} style={{padding:"13px 32px",fontSize:14}}>Create a poll</Btn>
+        <Btn variant="ghost" onClick={()=>navigate("mypolls")} style={{padding:"13px 32px",fontSize:14}}>My Polls</Btn>
+      </div>
     </div>
   );
 }
@@ -695,6 +683,7 @@ export default function App(){
   let view;
   if(!route||route==="")    view=<Landing/>;
   else if(route==="create") view=<HostCreate/>;
+  else if(route==="mypolls")view=<MyPolls/>;
   else if(route==="guest")  view=<GuestView eventId={param}/>;
   else if(route==="results")view=<ResultsView eventId={param}/>;
   else                       view=<Centered>Page not found.</Centered>;
@@ -718,7 +707,10 @@ export default function App(){
             display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>📅</div>
           <span style={{fontFamily:font,fontWeight:700,fontSize:15,color:C.text}}>Gettogether</span>
         </button>
-        <Btn variant="ghost" onClick={()=>navigate("create")} style={{padding:"6px 14px",fontSize:12}}>+ New poll</Btn>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <Btn variant="ghost" onClick={()=>navigate("mypolls")} style={{padding:"6px 14px",fontSize:12}}>My Polls</Btn>
+          <Btn onClick={()=>navigate("create")} style={{padding:"6px 14px",fontSize:12}}>+ New poll</Btn>
+        </div>
       </header>
       {view}
     </div>
