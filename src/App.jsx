@@ -20,14 +20,12 @@ function uid(){ return Math.random().toString(36).slice(2,10).toUpperCase(); }
 function sortedDays(avail){ return Object.keys(avail).sort(); }
 function totalSlots(avail){ return Object.values(avail).reduce((s,t)=>s+t.length,0); }
 
-// ── Host ID — persisted in localStorage ──────────────────────────────────────
 function getHostId(){
   let id = localStorage.getItem("gt:hostId");
   if(!id){ id=uid(); localStorage.setItem("gt:hostId",id); }
   return id;
 }
 
-// ── Supabase ──────────────────────────────────────────────────────────────────
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
@@ -80,7 +78,6 @@ async function loadResponseCounts(eventIds){
   return counts;
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
 function useHash(){
   const [hash,setHash]=useState(window.location.hash.slice(1)||"");
   useEffect(()=>{
@@ -92,7 +89,6 @@ function useHash(){
 }
 function navigate(p){ window.location.hash=p; }
 
-// ── Design tokens ─────────────────────────────────────────────────────────────
 const C={
   bg:"#141414", surface:"#1c1c1c", surfaceHi:"#242424",
   border:"#2a2a2a", borderHi:"#333",
@@ -102,7 +98,6 @@ const C={
 };
 const font="'Plus Jakarta Sans','DM Sans',sans-serif";
 
-// ── Base UI ───────────────────────────────────────────────────────────────────
 function Card({ children, style={}, onClick }){
   return(
     <div onClick={onClick} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,
@@ -200,7 +195,6 @@ function LinkBox({ label, url }){
   );
 }
 
-// ── Calendar ──────────────────────────────────────────────────────────────────
 function DayCell({ d, state, onToggle }){
   const [hov,setHov]=useState(false);
   const bg=state==="has-times"?C.accent:state==="selected"?C.accentBg:hov&&state!=="disabled"?C.surfaceHi:"transparent";
@@ -231,7 +225,6 @@ function Calendar({ year, month, availability, isDisabled, selectedDay, onSelect
   );
 }
 
-// ── Time grid ─────────────────────────────────────────────────────────────────
 function TimeCell({ t, sel, avail, onToggle }){
   const [hov,setHov]=useState(false);
   return(
@@ -253,7 +246,6 @@ function TimeGrid({ available, selected, onToggle }){
   );
 }
 
-// ── DayTimeEditor ─────────────────────────────────────────────────────────────
 function DayTimeEditor({ availability, setAvailability, offered, cal, onPrevMonth, onNextMonth }){
   const [activeDay,setActiveDay]=useState(null);
 
@@ -336,7 +328,6 @@ function DayTimeEditor({ availability, setAvailability, offered, cal, onPrevMont
   );
 }
 
-// ── My Polls Dashboard ────────────────────────────────────────────────────────
 function MyPolls(){
   const [events,setEvents]=useState([]);
   const [counts,setCounts]=useState({});
@@ -367,7 +358,7 @@ function MyPolls(){
 
       {events.length===0?(
         <Card style={{textAlign:"center",padding:48}}>
-          <div style={{fontSize:32,marginBottom:16}}><img src="/logo.svg" style={{width:28,height:28,borderRadius:8}} /></div>
+          <img src="/logo.svg" style={{width:48,height:48,borderRadius:12,display:"block",margin:"0 auto 16px"}}/>
           <div style={{fontSize:15,fontWeight:600,color:C.text,marginBottom:8}}>No polls yet</div>
           <div style={{fontSize:13,color:C.textMid,marginBottom:24}}>Create your first poll to get started.</div>
           <Btn onClick={()=>navigate("create")}>Create a poll</Btn>
@@ -414,7 +405,6 @@ function MyPolls(){
   );
 }
 
-// ── Host Create ───────────────────────────────────────────────────────────────
 function HostCreate(){
   const [cal,setCal]=useState(today());
   const [availability,setAvailability]=useState({});
@@ -437,7 +427,6 @@ function HostCreate(){
 
   if(done){
     const guestUrl=`${location.origin}${location.pathname}#guest/${done}`;
-    const resultsUrl=`${location.origin}${location.pathname}#results/${done}`;
     return(
       <PageWrap>
         <div style={{marginBottom:28}}>
@@ -477,7 +466,6 @@ function HostCreate(){
   );
 }
 
-// ── Guest View ────────────────────────────────────────────────────────────────
 function GuestView({ eventId }){
   const [event,setEvent]=useState(null);
   const [loading,setLoading]=useState(true);
@@ -544,7 +532,6 @@ function GuestView({ eventId }){
   );
 }
 
-// ── Results ───────────────────────────────────────────────────────────────────
 function ResultsView({ eventId }){
   const [event,setEvent]=useState(null);
   const [responses,setResponses]=useState([]);
@@ -654,13 +641,10 @@ function ResultsView({ eventId }){
   );
 }
 
-// ── Landing ───────────────────────────────────────────────────────────────────
 function Landing(){
   return(
     <div style={{maxWidth:440,margin:"0 auto",padding:"90px 20px 60px",textAlign:"center"}}>
-      <div style={{width:52,height:52,borderRadius:14,background:C.accent,
-        display:"flex",alignItems:"center",justifyContent:"center",
-        fontSize:24,margin:"0 auto 24px",boxShadow:`0 8px 24px ${C.accent}44`}}><img src="/logo.svg" style={{width:28,height:28,borderRadius:8}} /></div>
+      <img src="/logo.svg" style={{width:52,height:52,borderRadius:14,display:"block",margin:"0 auto 24px"}}/>
       <h1 style={{fontFamily:font,fontSize:36,fontWeight:800,color:C.text,margin:"0 0 12px",letterSpacing:"-.02em"}}>
         Gettogether
       </h1>
@@ -676,7 +660,6 @@ function Landing(){
   );
 }
 
-// ── App ───────────────────────────────────────────────────────────────────────
 export default function App(){
   const hash=useHash();
   const [,route,param]=hash.match(/^([^/]*)\/?(.*)$/)||[];
@@ -703,8 +686,7 @@ export default function App(){
         display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <button onClick={()=>navigate("")} style={{background:"none",border:"none",cursor:"pointer",
           display:"flex",alignItems:"center",gap:10,padding:0}}>
-          <div style={{width:28,height:28,borderRadius:8,background:C.accent,
-            display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}><img src="/logo.svg" style={{width:28,height:28,borderRadius:8}} /></div>
+          <img src="/logo.svg" style={{width:28,height:28,borderRadius:8}}/>
           <span style={{fontFamily:font,fontWeight:700,fontSize:15,color:C.text}}>Gettogether</span>
         </button>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
